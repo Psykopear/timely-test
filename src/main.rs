@@ -1,6 +1,6 @@
 mod dirutils;
 
-use dirutils::{is_desktop_file, is_hidden, search_dirs, searchresult_from_desktopentry};
+use dirutils::{is_desktop_file, is_hidden, search_dirs, SearchResult};
 
 use timely::dataflow::{
     channels::pact::Pipeline,
@@ -10,9 +10,11 @@ use walkdir::WalkDir;
 
 fn main() {
     timely::example(|scope| {
+        // This is our source operator.
+        // It goes through xdg data folders and emits each one of them
         source(scope, "data_dirs", |capability, info| {
-            // Do I need to use the activator? It works without it too, but I'm not sure what it
-            // does
+            // Do I need to use the activator?
+            // It works without it too, but I'm not sure what it does
             use timely::scheduling::Scheduler;
             let activator = scope.activator_for(&info.address[..]);
 
@@ -28,7 +30,8 @@ fn main() {
                     for folder in search_dirs() {
                         output.session(&cap).give(folder);
                         cap.downgrade(&(time + i));
-                        // Should I activate for every folder, or at the end of it?
+                        // Should I activate for every folder, or at the end of this loop, if at
+                        // all?
                         activator.activate();
                         i += 1;
                     }
@@ -36,8 +39,12 @@ fn main() {
                 cap = None;
             }
         })
+        // Operator to extract files from the input directories
         .unary(Pipeline, "extract_files", |_capability, _info| {
+            // Why do I need to capture the data inside a vec owned by this pipeline?
+            // Why can't I drain it directly?
             let mut vector = Vec::new();
+
             move |input, output| {
                 while let Some((time, data)) = input.next() {
                     data.swap(&mut vector);
@@ -46,24 +53,19 @@ fn main() {
                         for entry in WalkDir::new(folder)
                             .into_iter()
                             .filter_entry(|e| !is_hidden(e))
+                            .filter_map(Result::ok)
+                            .filter(is_desktop_file)
                         {
-                            if let Ok(entry) = entry {
-                                if is_desktop_file(&entry) {
-                                    session.give(entry.into_path());
-                                }
-                            }
+                            session.give(entry.into_path());
                         }
                     }
                 }
             }
         })
-        .map(|entry| searchresult_from_desktopentry(&entry))
-        .filter(|e| e.is_some())
-        .map(|e| e.unwrap())
-        .map(|mut e| {
-            e.add_icon();
-            e
-        })
+        .map(SearchResult::try_from)
+        .filter(Result::is_ok)
+        .map(Result::unwrap)
+        .map(SearchResult::with_icon)
         .inspect(|search_result| {
             println!("{} - {:?}", search_result.name, search_result.icon_path)
         });
