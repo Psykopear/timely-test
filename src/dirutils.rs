@@ -1,7 +1,8 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use ini::Ini;
-use walkdir::{DirEntry, WalkDir};
+use linicon::{lookup_icon, IconPath};
+use walkdir::DirEntry;
 use xdg::BaseDirectories;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -16,18 +17,8 @@ pub struct SearchResult {
 
 impl SearchResult {
     pub fn with_icon(mut self) -> Self {
-        let themes = vec!["Papirus", "hicolor", "Adwaita", "gnome"];
-        let size = "48x48";
-        for theme in themes {
-            self.icon_path = WalkDir::new(format!("/usr/share/icons/{theme}/{size}"))
-                .into_iter()
-                .filter_map(|e| e.ok())
-                .find(|e| e.path().file_stem().unwrap().to_string_lossy() == self.icon_name)
-                .map(|e| e.path().into());
-            // Just stop at the first one we find
-            if self.icon_path.is_some() {
-                break;
-            }
+        if let Some(Ok(IconPath { path, .. })) = lookup_icon(&self.icon_name).next() {
+            self.icon_path = Some(path);
         }
         self
     }
