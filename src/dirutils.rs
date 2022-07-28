@@ -89,6 +89,7 @@ impl TryFrom<PathBuf> for SearchResult {
     type Error = SearchResultError;
 
     fn try_from(value: PathBuf) -> Result<Self, Self::Error> {
+        // TODO: Rather than do this, create to input streams and use the correct one.
         if let Ok(instance) = SearchResult::from_desktop(&value) {
             Ok(instance)
         } else {
