@@ -24,6 +24,57 @@ impl SearchResult {
     }
 }
 
+impl SearchResult {
+    pub fn from_desktop(value: &PathBuf) -> Result<Self, SearchResultError> {
+        use SearchResultError::*;
+        // If anything we need can't be found, return None
+        let info = Ini::load_from_file(value).map_err(|_err| FileNotFound)?;
+        let section = info.section(Some("Desktop Entry")).ok_or(MissingSection)?;
+        let name = section.get("Name").ok_or(MissingName)?.to_string();
+        let description = section
+            .get("Comment")
+            .ok_or(MissingDescription)?
+            .to_string();
+        let icon = section.get("Icon").ok_or(MissingIcon)?.to_string();
+        let command = section.get("Exec").ok_or(MissingCommand)?.to_string();
+
+        Ok(SearchResult {
+            icon_name: icon.to_string(),
+            icon_path: None,
+            desktop_entry_path: Some(value.clone()),
+            name,
+            description,
+            command,
+        })
+    }
+
+    pub fn from_bin(value: &PathBuf) -> Result<Self, SearchResultError> {
+        let name = value
+            .file_stem()
+            .ok_or(SearchResultError::MissingName)?
+            .to_str()
+            .ok_or(SearchResultError::MissingName)?
+            .to_string();
+
+        let command = value
+            .as_os_str()
+            .to_str()
+            .ok_or(SearchResultError::MissingDescription)?
+            .to_string();
+
+        let description = command.clone();
+
+        Ok(SearchResult {
+            icon_name: "terminal".to_string(),
+            icon_path: None,
+            desktop_entry_path: None,
+            name,
+            description,
+            command,
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum SearchResultError {
     FileNotFound,
@@ -38,26 +89,11 @@ impl TryFrom<PathBuf> for SearchResult {
     type Error = SearchResultError;
 
     fn try_from(value: PathBuf) -> Result<Self, Self::Error> {
-        use SearchResultError::*;
-        // If anything we need can't be found, return None
-        let info = Ini::load_from_file(&value).map_err(|_err| FileNotFound)?;
-        let section = info.section(Some("Desktop Entry")).ok_or(MissingSection)?;
-        let name = section.get("Name").ok_or(MissingName)?.to_string();
-        let description = section
-            .get("Comment")
-            .ok_or(MissingDescription)?
-            .to_string();
-        let icon = section.get("Icon").ok_or(MissingIcon)?.to_string();
-        let command = section.get("Exec").ok_or(MissingCommand)?.to_string();
-
-        Ok(SearchResult {
-            icon_name: icon.to_string(),
-            icon_path: None,
-            desktop_entry_path: Some(value),
-            name,
-            description,
-            command,
-        })
+        if let Ok(instance) = SearchResult::from_desktop(&value) {
+            Ok(instance)
+        } else {
+            SearchResult::from_bin(&value)
+        }
     }
 }
 

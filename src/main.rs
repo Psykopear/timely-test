@@ -1,5 +1,7 @@
 mod dirutils;
 
+use std::{env, fs};
+
 use dirutils::{is_desktop_file, is_hidden, search_dirs, SearchResult};
 
 use timely::dataflow::{
@@ -34,6 +36,20 @@ fn main() {
                         // all?
                         activator.activate();
                         i += 1;
+                    }
+
+                    let key = "PATH";
+                    if let Some(paths) = env::var_os(key) {
+                        for path in env::split_paths(&paths) {
+                            if let Ok(entries) = fs::read_dir(path) {
+                                output.session(&cap).give_iterator(
+                                    &mut entries.filter_map(Result::ok).map(|e| e.path()),
+                                );
+                                cap.downgrade(&(time + i));
+                                activator.activate();
+                                i += 1;
+                            }
+                        }
                     }
                 }
                 cap = None;
