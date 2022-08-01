@@ -77,6 +77,7 @@ impl SearchResult {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum SearchResultError {
+    WrongFileType,
     FileNotFound,
     MissingSection,
     MissingName,
@@ -89,12 +90,7 @@ impl TryFrom<PathBuf> for SearchResult {
     type Error = SearchResultError;
 
     fn try_from(value: PathBuf) -> Result<Self, Self::Error> {
-        // TODO: Rather than do this, create to input streams and use the correct one.
-        if let Ok(instance) = SearchResult::from_desktop(&value) {
-            Ok(instance)
-        } else {
-            SearchResult::from_bin(&value)
-        }
+        TryFrom::try_from(&value)
     }
 }
 
@@ -102,11 +98,14 @@ impl TryFrom<&PathBuf> for SearchResult {
     type Error = SearchResultError;
 
     fn try_from(value: &PathBuf) -> Result<Self, Self::Error> {
-        // TODO: Rather than do this, create to input streams and use the correct one.
-        if let Ok(instance) = SearchResult::from_desktop(&value) {
-            Ok(instance)
+        if let Some(ext) = value.extension() {
+            if ext == ".desktop" {
+                SearchResult::from_desktop(value)
+            } else {
+                Err(SearchResultError::WrongFileType)
+            }
         } else {
-            SearchResult::from_bin(&value)
+            SearchResult::from_bin(value)
         }
     }
 }
