@@ -13,6 +13,8 @@ pub struct SearchResult {
     pub name: String,
     pub description: String,
     pub command: String,
+    pub score: i64,
+    pub indices: Vec<usize>,
 }
 
 impl SearchResult {
@@ -45,6 +47,8 @@ impl SearchResult {
             name,
             description,
             command,
+            score: 0,
+            indices: vec![],
         })
     }
 
@@ -71,6 +75,8 @@ impl SearchResult {
             name,
             description,
             command,
+            score: 0,
+            indices: vec![],
         })
     }
 }
@@ -99,7 +105,7 @@ impl TryFrom<&PathBuf> for SearchResult {
 
     fn try_from(value: &PathBuf) -> Result<Self, Self::Error> {
         if let Some(ext) = value.extension() {
-            if ext == ".desktop" {
+            if ext == "desktop" {
                 SearchResult::from_desktop(value)
             } else {
                 Err(SearchResultError::WrongFileType)
@@ -122,10 +128,31 @@ pub fn is_desktop_file(entry: &DirEntry) -> bool {
     entry.path().extension().unwrap_or_default() == "desktop"
 }
 
-pub fn search_dirs() -> Vec<PathBuf> {
+pub fn paths_iter() -> impl Iterator<Item = PathBuf> + 'static {
+    let paths: Vec<PathBuf> = std::env::split_paths(&std::env::var_os("PATH").unwrap()).collect();
     let base_dirs = BaseDirectories::new()
         .expect("Can't find xdg directories! Good luck and thanks for all the fish");
-    let mut data_dirs: Vec<PathBuf> = vec![base_dirs.get_data_home()];
-    data_dirs.append(&mut base_dirs.get_data_dirs());
-    data_dirs
+
+    base_dirs
+        .get_data_dirs()
+        .into_iter()
+        .chain(std::iter::once(base_dirs.get_data_home()))
+        .map(|dir| {
+            walkdir::WalkDir::new(dir)
+                .into_iter()
+                .filter_entry(|e| !is_hidden(e))
+                .filter_map(Result::ok)
+                .filter(is_desktop_file)
+                .map(DirEntry::into_path)
+        })
+        .flatten()
+        .chain(
+            paths
+                .into_iter()
+                .map(|path| std::fs::read_dir(path))
+                .filter_map(Result::ok)
+                .flatten()
+                .filter_map(Result::ok)
+                .map(|e| e.path()),
+        )
 }

@@ -1,20 +1,19 @@
 mod dirutils;
 
 use std::hash::{Hash, Hasher};
-use std::thread;
-use std::time::Duration;
 use std::{collections::hash_map::DefaultHasher, env, fs, path::PathBuf};
 
+use fuzzy_matcher::skim::SkimMatcherV2;
+use fuzzy_matcher::FuzzyMatcher;
 use timely::dataflow::channels::pact::Pipeline;
 use timely::dataflow::operators::generic::source;
 use timely::dataflow::operators::Operator;
 use timely::dataflow::{
-    operators::{aggregation::Aggregate, Exchange, Filter, Input, Inspect, Map, Probe},
+    operators::{Exchange, Filter, Inspect, Map, Probe},
     InputHandle,
 };
-use walkdir::{DirEntry, WalkDir};
 
-fn calculate_hash<T: Hash>(t: &T) -> u64 {
+fn hash_pathbuf(t: &PathBuf) -> u64 {
     let mut s = DefaultHasher::new();
     t.hash(&mut s);
     s.finish()
@@ -24,42 +23,21 @@ fn main() {
     timely::execute_from_args(env::args(), |worker| {
         let index = worker.index();
         let mut user_input = InputHandle::<u64, String>::new();
+        let matcher = SkimMatcherV2::default();
+        let mut cache: Vec<dirutils::SearchResult> = Vec::new();
 
         worker.dataflow::<u64, _, _>(|scope| {
             source(scope, "Dirutils", |cap, _info| {
                 let mut cap = Some(cap);
                 move |output| {
-                    if let Some(cap) = cap.as_mut() {
-                        if index == 0 {
-                            for folder in dirutils::search_dirs().iter() {
-                                output.session(&cap).give_iterator(
-                                    WalkDir::new(folder)
-                                        .into_iter()
-                                        .filter_entry(|e| !dirutils::is_hidden(e))
-                                        .filter_map(Result::ok)
-                                        .filter(dirutils::is_desktop_file)
-                                        .map(DirEntry::into_path),
-                                );
-                            }
-
-                            if let Some(paths) = env::var_os("PATH") {
-                                for path in env::split_paths(&paths) {
-                                    if let Ok(entries) = fs::read_dir(path) {
-                                        output.session(&cap).give_iterator(
-                                            entries.filter_map(Result::ok).map(|e| e.path()),
-                                        );
-                                    }
-                                }
-                            }
+                    if index == 0 {
+                        if let Some(cap) = cap.take() {
+                            output.session(&cap).give_iterator(dirutils::paths_iter())
                         }
                     }
-                    cap = None;
                 }
             })
-            .exchange(|entry: &PathBuf| {
-                let entry_string = entry.as_os_str().to_str().unwrap().to_string();
-                calculate_hash(&entry_string)
-            })
+            .exchange(hash_pathbuf)
             .map(dirutils::SearchResult::try_from)
             .filter(Result::is_ok)
             .map(Result::unwrap)
@@ -70,26 +48,42 @@ fn main() {
                 Pipeline,
                 "UserInput",
                 |cap, _info| {
-                    let mut cap = Some(cap);
-
                     move |results, user_input, output| {
                         let mut query_string = None;
                         while let Some((_time, data)) = user_input.next() {
                             for string in data.iter() {
-                                println!("==> {}", string);
+                                // println!("==> {}", string);
                                 query_string = Some(string.clone());
                             }
                         }
-                        if let Some(qs) = query_string {
-                            // println!("qs: {}", qs);
+                        while let Some((_time, data)) = results.next() {
+                            for sr in data.iter() {
+                                cache.push(sr.clone());
+                            }
+                        }
 
-                            if let Some(cap) = cap.take() {
-                                while let Some((_time, data)) = results.next() {
-                                    for sr in data.iter() {
-                                        if sr.name.to_lowercase().contains(&qs) {
-                                            output.session(&cap).give(sr.clone());
-                                        }
+                        if let Some(qs) = query_string {
+                            for sr in cache.iter() {
+                                let mut search_name = String::from(&sr.name);
+                                if let Some(path) = sr.desktop_entry_path.as_ref() {
+                                    if let Some(file_name) = path.file_stem() {
+                                        search_name.push(' ');
+                                        search_name.push_str(file_name.to_str().unwrap_or(""));
                                     }
+                                };
+                                let result = matcher.fuzzy_indices(&search_name, &qs);
+
+                                if let Some((score, indices)) = result {
+                                    output.session(&cap).give(dirutils::SearchResult {
+                                        // Always put desktop entry files first
+                                        score: if sr.desktop_entry_path.is_some() {
+                                            score + 1000
+                                        } else {
+                                            score
+                                        },
+                                        indices,
+                                        ..sr.clone()
+                                    })
                                 }
                             }
                         }
@@ -97,18 +91,30 @@ fn main() {
                 },
             )
             .inspect(|search_result| {
-                println!("{} - {:?}", search_result.name, search_result.icon_path)
+                println!(
+                    "{} - {:?} <{}>",
+                    search_result.name, search_result.desktop_entry_path, search_result.score
+                )
             })
             .probe()
         });
 
-        user_input.send("firefox".to_string());
-        // user_input.advance_to(1u64);
-        worker.step();
-        thread::sleep(Duration::from_secs(1));
-        user_input.send("nautilus".to_string());
-        // user_input.advance_to(2u64);
-        worker.step();
+        if index == 0 {
+            user_input.send("".to_string());
+            user_input.advance_to(1);
+            worker.step();
+            let mut i = 2;
+            loop {
+                println!("");
+                println!("==> Write query: ");
+                let mut user_in = String::new();
+                std::io::stdin().read_line(&mut user_in).unwrap();
+                user_input.send(user_in.trim().to_string());
+                user_input.advance_to(i);
+                worker.step();
+                i += 1;
+            }
+        }
     })
     .unwrap();
 }
