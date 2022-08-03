@@ -1,7 +1,8 @@
 mod dirutils;
 
-use std::env;
+use std::{env, io::stdin, thread};
 
+use crossbeam::channel::{bounded, Receiver};
 use fuzzy_matcher::{skim::SkimMatcherV2, FuzzyMatcher};
 use timely::dataflow::{
     channels::pact::Pipeline,
@@ -9,12 +10,14 @@ use timely::dataflow::{
     InputHandle,
 };
 
-fn main() {
-    timely::execute_from_args(env::args(), |worker| {
+fn run_timely(rx: Receiver<String>) {
+    timely::execute_from_args(env::args(), move |worker| {
         let index = worker.index();
         let mut user_input = InputHandle::<u64, String>::new();
         let matcher = SkimMatcherV2::default();
         let mut cache: Vec<dirutils::SearchResult> = Vec::new();
+
+        let rx = rx.clone();
 
         worker.dataflow::<u64, _, _>(|scope| {
             source(scope, "Dirutils", |cap, _info| {
@@ -39,13 +42,14 @@ fn main() {
                 "UserInput",
                 |cap, _info| {
                     move |results, user_input, output| {
-                        let mut query_string = None;
+                        // Add new elements to the cache
+                        results.for_each(|_time, data| cache.extend_from_slice(&data));
+
                         // Get latest query string
+                        let mut query_string = None;
                         user_input.for_each(|_time, data| {
                             query_string = data.last().cloned();
                         });
-                        // Add new elements to the cache
-                        results.for_each(|_time, data| cache.extend_from_slice(&data));
 
                         if let Some(qs) = query_string {
                             output
@@ -59,21 +63,22 @@ fn main() {
                     }
                 },
             )
-            .inspect(|search_result| println!("{} <{}>", search_result.name, search_result.score))
+            .inspect(|search_result| {
+                println!(
+                    "===> <score: {}>\t{}",
+                    search_result.score, search_result.name
+                )
+            })
             .probe()
         });
 
-        if index == 0 {
-            user_input.send("".to_string());
-            user_input.advance_to(1);
-            worker.step();
-            let mut i = 2;
-            loop {
-                println!("");
-                println!("==> Write query: ");
-                let mut user_in = String::new();
-                std::io::stdin().read_line(&mut user_in).unwrap();
-                user_input.send(user_in.trim().to_string());
+        user_input.send("".to_string());
+        user_input.advance_to(1);
+        worker.step();
+        let mut i = 2;
+        loop {
+            if let Ok(msg) = rx.recv() {
+                user_input.send(msg);
                 user_input.advance_to(i);
                 worker.step();
                 i += 1;
@@ -81,4 +86,15 @@ fn main() {
         }
     })
     .unwrap();
+}
+
+fn main() {
+    let (tx, rx) = bounded::<String>(1);
+    thread::spawn(|| run_timely(rx));
+    loop {
+        println!("Input query: ");
+        let mut user_in = String::new();
+        stdin().read_line(&mut user_in).unwrap();
+        tx.send(user_in.trim().to_string()).unwrap();
+    }
 }
