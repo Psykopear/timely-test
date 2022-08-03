@@ -11,10 +11,10 @@ pub struct SearchResult {
     pub icon_name: String,
     pub desktop_entry_path: Option<PathBuf>,
     pub name: String,
+    pub search_name: String,
     pub description: String,
     pub command: String,
     pub score: i64,
-    pub indices: Vec<usize>,
 }
 
 impl SearchResult {
@@ -22,6 +22,15 @@ impl SearchResult {
         if let Some(Ok(IconPath { path, .. })) = lookup_icon(&self.icon_name).next() {
             self.icon_path = Some(path);
         }
+        self
+    }
+
+    pub fn with_score(mut self, score: i64) -> Self {
+        self.score = if self.desktop_entry_path.is_some() {
+            score + 1000
+        } else {
+            score
+        };
         self
     }
 }
@@ -39,16 +48,21 @@ impl SearchResult {
             .to_string();
         let icon = section.get("Icon").ok_or(MissingIcon)?.to_string();
         let command = section.get("Exec").ok_or(MissingCommand)?.to_string();
+        let mut search_name = String::from(&name);
+        if let Some(file_name) = value.file_stem() {
+            search_name.push(' ');
+            search_name.push_str(file_name.to_str().unwrap_or(""));
+        }
 
         Ok(SearchResult {
             icon_name: icon.to_string(),
             icon_path: None,
             desktop_entry_path: Some(value.clone()),
             name,
+            search_name,
             description,
             command,
             score: 0,
-            indices: vec![],
         })
     }
 
@@ -59,6 +73,8 @@ impl SearchResult {
             .to_str()
             .ok_or(SearchResultError::MissingName)?
             .to_string();
+
+        let search_name = name.clone();
 
         let command = value
             .as_os_str()
@@ -73,10 +89,10 @@ impl SearchResult {
             icon_path: None,
             desktop_entry_path: None,
             name,
+            search_name,
             description,
             command,
             score: 0,
-            indices: vec![],
         })
     }
 }

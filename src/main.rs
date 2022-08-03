@@ -1,7 +1,7 @@
 mod dirutils;
 
 use std::hash::{Hash, Hasher};
-use std::{collections::hash_map::DefaultHasher, env, fs, path::PathBuf};
+use std::{collections::hash_map::DefaultHasher, env, path::PathBuf};
 
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
@@ -52,7 +52,6 @@ fn main() {
                         let mut query_string = None;
                         while let Some((_time, data)) = user_input.next() {
                             for string in data.iter() {
-                                // println!("==> {}", string);
                                 query_string = Some(string.clone());
                             }
                         }
@@ -63,27 +62,9 @@ fn main() {
                         }
 
                         if let Some(qs) = query_string {
-                            for sr in cache.iter() {
-                                let mut search_name = String::from(&sr.name);
-                                if let Some(path) = sr.desktop_entry_path.as_ref() {
-                                    if let Some(file_name) = path.file_stem() {
-                                        search_name.push(' ');
-                                        search_name.push_str(file_name.to_str().unwrap_or(""));
-                                    }
-                                };
-                                let result = matcher.fuzzy_indices(&search_name, &qs);
-
-                                if let Some((score, indices)) = result {
-                                    output.session(&cap).give(dirutils::SearchResult {
-                                        // Always put desktop entry files first
-                                        score: if sr.desktop_entry_path.is_some() {
-                                            score + 1000
-                                        } else {
-                                            score
-                                        },
-                                        indices,
-                                        ..sr.clone()
-                                    })
+                            for sr in cache.iter().cloned() {
+                                if let Some(score) = matcher.fuzzy_match(&sr.search_name, &qs) {
+                                    output.session(&cap).give(sr.with_score(score));
                                 }
                             }
                         }
