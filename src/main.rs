@@ -1,23 +1,13 @@
 mod dirutils;
 
-use std::hash::{Hash, Hasher};
-use std::{collections::hash_map::DefaultHasher, env, path::PathBuf};
+use std::env;
 
-use fuzzy_matcher::skim::SkimMatcherV2;
-use fuzzy_matcher::FuzzyMatcher;
-use timely::dataflow::channels::pact::Pipeline;
-use timely::dataflow::operators::generic::source;
-use timely::dataflow::operators::Operator;
+use fuzzy_matcher::{skim::SkimMatcherV2, FuzzyMatcher};
 use timely::dataflow::{
-    operators::{Exchange, Filter, Inspect, Map, Probe},
+    channels::pact::Pipeline,
+    operators::{generic::source, Exchange, Filter, Inspect, Map, Operator, Probe},
     InputHandle,
 };
-
-fn hash_pathbuf(t: &PathBuf) -> u64 {
-    let mut s = DefaultHasher::new();
-    t.hash(&mut s);
-    s.finish()
-}
 
 fn main() {
     timely::execute_from_args(env::args(), |worker| {
@@ -37,7 +27,7 @@ fn main() {
                     }
                 }
             })
-            .exchange(hash_pathbuf)
+            .exchange(dirutils::hash_pathbuf)
             .map(dirutils::SearchResult::try_from)
             .filter(Result::is_ok)
             .map(Result::unwrap)
@@ -50,33 +40,26 @@ fn main() {
                 |cap, _info| {
                     move |results, user_input, output| {
                         let mut query_string = None;
-                        while let Some((_time, data)) = user_input.next() {
-                            for string in data.iter() {
-                                query_string = Some(string.clone());
-                            }
-                        }
-                        while let Some((_time, data)) = results.next() {
-                            for sr in data.iter() {
-                                cache.push(sr.clone());
-                            }
-                        }
+                        // Get latest query string
+                        user_input.for_each(|_time, data| {
+                            query_string = data.last().cloned();
+                        });
+                        // Add new elements to the cache
+                        results.for_each(|_time, data| cache.extend_from_slice(&data));
 
                         if let Some(qs) = query_string {
-                            for sr in cache.iter().cloned() {
-                                if let Some(score) = matcher.fuzzy_match(&sr.search_name, &qs) {
-                                    output.session(&cap).give(sr.with_score(score));
-                                }
-                            }
+                            output
+                                .session(&cap)
+                                .give_iterator(cache.iter().cloned().filter_map(|sr| {
+                                    matcher
+                                        .fuzzy_match(&sr.search_name, &qs)
+                                        .map(|score| sr.with_score(score))
+                                }));
                         }
                     }
                 },
             )
-            .inspect(|search_result| {
-                println!(
-                    "{} - {:?} <{}>",
-                    search_result.name, search_result.desktop_entry_path, search_result.score
-                )
-            })
+            .inspect(|search_result| println!("{} <{}>", search_result.name, search_result.score))
             .probe()
         });
 

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, collections::hash_map::DefaultHasher, hash::{Hash, Hasher}};
 
 use ini::Ini;
 use linicon::{lookup_icon, IconPath};
@@ -171,4 +171,10 @@ pub fn paths_iter() -> impl Iterator<Item = PathBuf> + 'static {
                 .filter_map(Result::ok)
                 .map(|e| e.path()),
         )
+}
+
+pub fn hash_pathbuf(t: &PathBuf) -> u64 {
+    let mut s = DefaultHasher::new();
+    t.hash(&mut s);
+    s.finish()
 }
